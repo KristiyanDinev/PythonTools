@@ -1,0 +1,126 @@
+import socket
+import json
+import requests as rq
+import threading
+
+"""
+Client connects
+- After a successful connection
+ it is expected of the client to send a JSON
+ text that represent the username. like: {"username": "Bob"}
+ 
+- Then the client can do whatever it wants until it closes the connection.
+"""
+
+
+class ChatServer:
+    def __init__(self, port=5555):
+        self.message_server_prefix: str = "SERVER: "
+        self.server_socket: socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        self.host: str = socket.gethostbyname(socket.gethostname())
+        self.port: int = port
+
+        self.public_ip: str = rq.get('https://api.ipify.org').content.decode('utf8')
+        print(f"----------------------\n" +
+               " Server Started on:\n" +
+              f" Public IP: {self.public_ip}\n" +
+              f" Host: {self.host}\n" +
+              f" Port: {self.port}\n" +
+              f"----------------------\n")
+
+        self.server_socket.bind((self.host, self.port))
+        self.server_socket.listen()
+        self.lock = threading.RLock()
+        
+        # client connections {connection: (address, username)}
+        self.clients: dict = {}
+
+        # list of client_sockets
+        self.disconnected_clients: list = []
+
+    def clean_up_disconnected_clients(self):
+        # Clean up any dead clients
+        with self.lock:
+            for client in self.disconnected_clients:
+                if client not in self.clients.keys():
+                    continue
+                address, username = self.clients.get(client)
+                client.close()
+                self.clients.pop(client)
+                self.broadcast_message(f"{self.message_server_prefix}{username} left the session.")
+
+    def broadcast_message(self, message, exclude_client: list = []):
+        for client in self.clients:
+            if client in exclude_client:
+                continue
+
+            try:
+                client.send(message.encode('utf-8'))
+
+            except Exception:
+                with self.lock:
+                    self.disconnected_clients.append(client)
+        self.clean_up_disconnected_clients()
+
+    def handle_client(self, client_socket: socket, address):
+        """Handle a single client connection"""
+        # First message should be the username
+
+        # address[0] = IP
+        # address[1] = PORT
+
+        try:
+            while True:
+                data: dict = json.loads(client_socket.recv(1024).decode('utf-8'))
+
+                if client_socket not in self.clients.keys() and "username" in data.keys():
+                    username: str = data["username"]
+                    with self.lock:
+                        self.clients[client_socket] = (address, username)
+                    self.broadcast_message(
+                         f"{self.message_server_prefix}{username} has joined the session.",
+                        [client_socket])
+
+                    # Send welcome message to the new client
+                    client_socket.send(f"{self.message_server_prefix}Welcome {username}!".encode('utf-8'))
+                    continue
+
+                with self.lock:
+                    client_address, username = self.clients.get(client_socket)
+                self.broadcast_message(f"{username}: {data}", [client_socket])
+
+        except Exception:
+            pass
+
+        finally:
+            # Clean up when client disconnects
+            with self.lock:
+                self.disconnected_clients.append(client_socket)
+            self.clean_up_disconnected_clients()
+
+    def run(self):
+        """Run the server and accept connections"""
+        try:
+            while True:
+                # Accept new connections
+                client_socket, address = self.server_socket.accept()
+
+                # Start a new thread to handle this client
+                #Process(target=self.handle_client, args=(client_socket, address), daemon=True).start()
+                threading.Thread(target=self.handle_client, args=(client_socket, address), daemon=True).start()
+        
+        except KeyboardInterrupt:
+            print("Server is shutting down...")
+
+        finally:
+            # Clean up
+            with self.lock:
+                self.disconnected_clients.extend(self.clients)
+            self.clean_up_disconnected_clients()
+            self.server_socket.close()
+
+if __name__ == "__main__":
+    ChatServer().run()
+# TODO: Fix: Client randomly disconnects.
