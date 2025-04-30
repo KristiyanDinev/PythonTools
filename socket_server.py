@@ -51,18 +51,55 @@ class ChatServer:
                 self.clients.pop(client)
                 self.broadcast_message(f"{self.message_server_prefix}{username} left the session.")
 
+    def send_message_to_client(self, client: socket, message: str):
+        try:
+            client.send(message.encode('utf-8'))
+
+        except Exception:
+            with self.lock:
+                self.disconnected_clients.append(client)
+
     def broadcast_message(self, message, exclude_client: list = []):
         for client in self.clients:
             if client in exclude_client:
                 continue
 
-            try:
-                client.send(message.encode('utf-8'))
+            self.send_message_to_client(client, message)
 
-            except Exception:
-                with self.lock:
-                    self.disconnected_clients.append(client)
         self.clean_up_disconnected_clients()
+
+
+    def auth(self, data: dict, client_socket: socket, client_address) -> bool:
+        if client_socket in self.clients.keys() or "username" not in data.keys():
+            return False
+
+        username: str = data["username"]
+        with self.lock:
+            self.clients[client_socket] = (client_address, username)
+        self.broadcast_message(
+            f"{self.message_server_prefix}{username} has joined the session.",
+             [client_socket])
+
+        # Send welcome message to the new client
+        client_socket.send(f"{self.message_server_prefix}Welcome {username}!".encode('utf-8'))
+        return True
+
+    def execute_command(self, command: str) -> str:
+        """"""
+        pass
+
+    def client_messages(self, data: dict, client_socket: socket):
+        message = data.get("say")
+        command = data.get("cmd")
+
+        with self.lock:
+            client_address, username = self.clients.get(client_socket)
+
+        if message is not None:
+            self.broadcast_message(f"{username}: {message}", [])
+
+        elif command is not None:
+            self.send_message_to_client(client_socket, self.execute_command(command))
 
     def handle_client(self, client_socket: socket, address):
         """Handle a single client connection"""
@@ -75,21 +112,10 @@ class ChatServer:
             while True:
                 data: dict = json.loads(client_socket.recv(1024).decode('utf-8'))
 
-                if client_socket not in self.clients.keys() and "username" in data.keys():
-                    username: str = data["username"]
-                    with self.lock:
-                        self.clients[client_socket] = (address, username)
-                    self.broadcast_message(
-                         f"{self.message_server_prefix}{username} has joined the session.",
-                        [client_socket])
-
-                    # Send welcome message to the new client
-                    client_socket.send(f"{self.message_server_prefix}Welcome {username}!".encode('utf-8'))
+                if self.auth(data, client_socket, address):
                     continue
 
-                with self.lock:
-                    client_address, username = self.clients.get(client_socket)
-                self.broadcast_message(f"{username}: {data}", [client_socket])
+                self.client_messages(data, client_socket)
 
         except Exception:
             pass
@@ -123,4 +149,3 @@ class ChatServer:
 
 if __name__ == "__main__":
     ChatServer().run()
-# TODO: Fix: Client randomly disconnects.
