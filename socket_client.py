@@ -11,6 +11,7 @@ class ChatClient:
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connected = False
         self.username = ""
+        self.encoding = "utf-8"
         self.receiving_lock = threading.Lock()
         self.input_lock = threading.Lock()
 
@@ -29,7 +30,7 @@ class ChatClient:
 
             # Send username to server in JSON format as expected by server
             username_data = json.dumps({"username": username})
-            self.client_socket.send(username_data.encode('utf-8'))
+            self.client_socket.send(username_data.encode(self.encoding))
 
             self.connected = True
 
@@ -38,13 +39,13 @@ class ChatClient:
 
             # Start the input thread
             threading.Thread(target=self.handle_input, daemon=True).start()
-
             return True
+
         except Exception as e:
             print(f"Connection error: {e}")
             return False
 
-    def send_message(self, message):
+    def send_message(self, message: dict):
         """Send a message to the server"""
         if not self.connected:
             print("Not connected to server")
@@ -53,7 +54,7 @@ class ChatClient:
         try:
             # Format message as JSON as expected by the server
             message_data = json.dumps(message)
-            self.client_socket.send(message_data.encode('utf-8'))
+            self.client_socket.send(message_data.encode(self.encoding))
             return True
         except Exception as e:
             print(f"Error sending message: {e}")
@@ -70,21 +71,47 @@ class ChatClient:
 
         return f"\r{' ' * self.terminal_width}\r"
 
+
     def receive_messages(self):
-        """Continuously receive messages from the server"""
+        buffer = ""
         while self.connected:
             try:
-                message = self.client_socket.recv(1024).decode('utf-8')
+                message = self.client_socket.recv(1024).decode(self.encoding)
                 if not message:
                     with self.receiving_lock:
                         print("\nConnection to server lost")
                     self.connected = False
                     break
 
-                with self.receiving_lock:
-                    # Clear the current line properly and print the message
-                    print(f"{self.clear_line()}{message}")
-                    print("> ", end='', flush=True)  # Show prompt again
+                # Add received data to buffer
+                buffer += message
+
+                # Process complete lines from the buffer
+                while '\n' in buffer or '\r\n' in buffer:
+                    # Find the newline character
+                    index = buffer.find('\n')
+                    if index == -1:
+                        index = buffer.find('\r\n')
+                        if index != -1:  # Found \r\n
+                            line = buffer[:index]
+                            buffer = buffer[index+2:]  # Skip both \r and \n
+                        else:
+                            break  # No complete line found
+                    else:
+                        line = buffer[:index]
+                        buffer = buffer[index+1:]  # Skip just \n
+
+                    # Display the complete line
+                    with self.receiving_lock:
+                        print(f"{self.clear_line()}{line}")
+                        print("> ", end='', flush=True)  # Show prompt again
+
+                # If we have data but no newline, display it too
+                if buffer and not ('\n' in buffer or '\r\n' in buffer):
+                    with self.receiving_lock:
+                        print(f"{self.clear_line()}{buffer}")
+                        buffer = ""
+                        print("> ", end='', flush=True)
 
             except Exception as e:
                 with self.receiving_lock:
@@ -92,13 +119,14 @@ class ChatClient:
                 self.connected = False
                 break
 
-    def format_input_message(self, message: str) -> str:
+    def format_input_message(self, message: str) -> dict:
         data: dict = dict()
         if message.startswith("say "):
             data["say"] = message[4:]
+
         else:
             data["cmd"] = message
-        return json.dumps(data, indent=4)
+        return data
 
     def handle_input(self):
         """Handle user input in a separate thread"""
