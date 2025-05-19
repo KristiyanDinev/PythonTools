@@ -1,0 +1,5 @@
+customtkinter 
+pillow 
+opencv-python 
+pywin32 
+pystray
